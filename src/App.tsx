@@ -26,9 +26,10 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([
     { id: makeId(), role: 'bot', content: GREETING },
   ]);
-  const [conversationId, setConversationId] = useState<string | undefined>();
+  const [conversationId, setConversationId] = useState('');
   const [loading, setLoading] = useState(false);
   const [warning, setWarning] = useState<string | null>(null);
+  const [conditionResetNotice, setConditionResetNotice] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -52,7 +53,7 @@ function App() {
       const inputs: ChatInputs = {
         region: conditions.region.trim(),
         scene: conditions.scene,
-        mood: conditions.mood.trim() || undefined,
+        mood: conditions.mood.trim(),
       };
 
       try {
@@ -62,17 +63,22 @@ function App() {
           conversationId,
         });
         setConversationId(res.conversationId);
+        setConditionResetNotice(false);
         setMessages((prev) => [
           ...prev,
           { id: makeId(), role: 'bot', content: res.answer },
         ]);
-      } catch {
+      } catch (error) {
+        const detail =
+          error instanceof Error && error.message
+            ? error.message
+            : '不明なエラー';
         setMessages((prev) => [
           ...prev,
           {
             id: makeId(),
             role: 'bot',
-            content: 'すみません、エラーが発生しました。もう一度お試しください。',
+            content: `⚠️ うまく返事をもらえませんでした。少し待ってからもう一度送ってください。（${detail}）`,
           },
         ]);
       } finally {
@@ -82,10 +88,25 @@ function App() {
     [conditions, conversationId],
   );
 
+  const handleConditionsChange = (next: Conditions) => {
+    const changed =
+      next.region !== conditions.region ||
+      next.scene !== conditions.scene ||
+      next.mood !== conditions.mood;
+    const hasStartedChat =
+      Boolean(conversationId) || messages.some((m) => m.role === 'user');
+    if (changed && hasStartedChat) {
+      setConversationId('');
+      setConditionResetNotice(true);
+    }
+    setConditions(next);
+  };
+
   const handleReset = () => {
     setMessages([{ id: makeId(), role: 'bot', content: GREETING }]);
-    setConversationId(undefined);
+    setConversationId('');
     setWarning(null);
+    setConditionResetNotice(false);
   };
 
   return (
@@ -93,7 +114,12 @@ function App() {
       <Header />
 
       <div className="px-3 pt-3">
-        <ConditionsForm values={conditions} onChange={setConditions} />
+        <ConditionsForm values={conditions} onChange={handleConditionsChange} />
+        {conditionResetNotice && (
+          <p className="mt-2 text-xs text-stone-500">
+            条件が変わったので新しい会話として相談します
+          </p>
+        )}
       </div>
 
       <div className="flex items-center justify-between px-3 pt-3 pb-1">

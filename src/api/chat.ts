@@ -23,30 +23,49 @@ const SCENE_LABELS: Record<string, string> = {
   home: '家でのんびり',
 };
 
-function buildDummyAnswer(query: string, inputs: ChatInputs): string {
-  const sceneLabel = SCENE_LABELS[inputs.scene] ?? inputs.scene;
-  const moodText = inputs.mood ? `（気分：${inputs.mood}）` : '';
+const USER_ID_STORAGE_KEY = 'outfit-chat-user-id';
 
-  return `### 今日のコーデ提案 👕
+function createRandomId(): string {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID().replace(/-/g, '').slice(0, 16);
+    }
+  } catch {
+    // fall through
+  }
+  return `${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+}
 
-**地域：** ${inputs.region}
-**予定：** ${sceneLabel}${moodText}
+function getUserId(): string {
+  const fallback = `web-${createRandomId()}`;
+  try {
+    const existing = localStorage.getItem(USER_ID_STORAGE_KEY);
+    if (existing) return existing;
+    localStorage.setItem(USER_ID_STORAGE_KEY, fallback);
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
 
-**提案の方向性：**
+function toSceneLabel(scene: string): string {
+  return SCENE_LABELS[scene] ?? scene;
+}
 
-- ${query} というご要望ですね
-- ${inputs.region} の気候にあわせた素材選びが大切です
-- ${sceneLabel} のシーンでは動きやすさと清潔感がポイントです
-
-**おすすめの組み合わせ：**
-
-1. **トップス**：季節に合う襟付きシャツ or 切り替えニット
-2. **ボトムス**：スラックス or 濃色デニムでバランスよく
-3. **羽織り**：朝晩の冷えに備えて薄手のジャケット
-4. **靴**：シーンに合うレザーシューズ or スニーカー
-
-> ※ダミーの回答です。API連携後に実際の提案に切り替わります。
-`;
+function extractErrorDetail(text: string, status: number): string {
+  try {
+    const data = JSON.parse(text) as { message?: unknown; error?: unknown };
+    if (typeof data.message === 'string' && data.message.trim()) {
+      return data.message;
+    }
+    if (typeof data.error === 'string' && data.error.trim()) {
+      return data.error;
+    }
+  } catch {
+    // not JSON
+  }
+  if (text.trim()) return text.trim();
+  return `サーバーエラー（ステータス ${status}）`;
 }
 
 export async function sendMessage(
@@ -54,15 +73,46 @@ export async function sendMessage(
 ): Promise<SendMessageResponse> {
   const { query, inputs, conversationId } = payload;
 
-  await new Promise((resolve) => setTimeout(resolve, 1000));
+  let response: Response;
+  try {
+    response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        inputs: {
+          region: inputs.region,
+          scene: toSceneLabel(inputs.scene),
+          mood: inputs.mood ?? '',
+        },
+        query,
+        response_mode: 'blocking',
+        conversation_id: conversationId ?? '',
+        user: getUserId(),
+      }),
+    });
+  } catch {
+    throw new Error('通信に失敗しました。ネットワーク接続を確認してください。');
+  }
 
-  const newConversationId =
-    conversationId ?? `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const text = await response.text();
 
-  const answer = buildDummyAnswer(query, inputs);
+  if (!response.ok) {
+    throw new Error(extractErrorDetail(text, response.status));
+  }
 
-  return {
-    answer,
-    conversationId: newConversationId,
-  };
+  try {
+    const data = JSON.parse(text) as {
+      answer?: unknown;
+      conversation_id?: unknown;
+    };
+    return {
+      answer: typeof data.answer === 'string' ? data.answer : '',
+      conversationId:
+        typeof data.conversation_id === 'string' ? data.conversation_id : '',
+    };
+  } catch {
+    throw new Error('サーバーからの応答を読み取れませんでした。');
+  }
 }
